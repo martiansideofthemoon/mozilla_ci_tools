@@ -7,6 +7,7 @@ interactions with distinct modules to meet your needs.
 from __future__ import absolute_import
 
 import logging
+import time
 
 from buildapi_client import make_retrigger_request, trigger_arbitrary_job
 
@@ -387,6 +388,12 @@ def trigger_job(revision, buildername, times=1, files=None, dry_run=False,
 
     We return a list of all requests made.
     """
+    # Add an extra property for nightly builds
+    if 'nightly' in buildername:
+        if not extra_properties:
+            extra_properties = {}
+        extra_properties['buildid'] = time.strftime("%Y%m%d%H%M%S")
+
     repo_name = query_repo_name_from_buildername(buildername)
     builder_to_trigger = None
     list_of_requests = []
