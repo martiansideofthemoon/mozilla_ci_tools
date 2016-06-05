@@ -240,6 +240,7 @@ def get_buildername_metadata(buildername):
         * product - e.g. firefox
         * repo_name - Associated short name for a repository (e.g. alder)
         * suite_name - talos & test jobs have an associated suite name (e.g chromez)
+        * nightly - Tells us whether a job is a nightly job
     """
     if buildername not in fetch_allthethings_data()['builders']:
         raise MozciError("Builder '{}' is missing. All builders' lenght: {}".format(
@@ -301,6 +302,11 @@ def get_buildername_metadata(buildername):
     assert all(meta)
     # Since builds don't have a suite name
     meta['suite_name'] = suite_name
+
+    if 'nightly' in buildername:
+        meta['nightly'] = True
+    else:
+        meta['nightly'] = False
 
     return meta
 

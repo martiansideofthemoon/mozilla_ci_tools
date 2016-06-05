@@ -15,6 +15,7 @@ from mozci import repositories
 from mozci.errors import MozciError
 from mozci.platforms import (
     build_talos_buildernames_for_repo,
+    get_buildername_metadata,
     get_max_pushes,
     determine_upstream_builder,
     is_downstream,
@@ -388,8 +389,9 @@ def trigger_job(revision, buildername, times=1, files=None, dry_run=False,
 
     We return a list of all requests made.
     """
+    metadata = get_buildername_metadata(buildername)
     # Add an extra property for nightly builds
-    if 'nightly' in buildername:
+    if metadata['nightly'] is True:
         if not extra_properties:
             extra_properties = {}
         extra_properties['buildid'] = time.strftime("%Y%m%d%H%M%S")

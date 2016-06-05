@@ -7,7 +7,7 @@ required = [
     "keyring",
     "progressbar",
     "pushlog_client",
-    "requests",
+    "requests[security]",
     "taskcluster",
     "treeherder-client",
     "jsonschema"
