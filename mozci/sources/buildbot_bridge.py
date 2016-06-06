@@ -359,7 +359,7 @@ def _generate_tc_tasks_from_builders(builders, repo_name, revision):
             metadata = get_buildername_metadata(builder)
             if metadata['platform_name'].startswith('android') and \
                metadata['nightly'] is True and \
-               'l10n' in builder:
+               'l10n' not in builder:
                 properties = {}
             task = _create_task(
                 buildername=builder,
@@ -549,7 +549,7 @@ def _generate_tasks(repo_name, revision, builders_graph, metadata=None, task_gra
         metadata = get_buildername_metadata(builder)
         if metadata['platform_name'].startswith('android') and \
            metadata['nightly'] is True and \
-           'l10n' in builder:
+           'l10n' not in builder:
             upload_to_task_id = {}
         task = _create_task(
             buildername=builder,
