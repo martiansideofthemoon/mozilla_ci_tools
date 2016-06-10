@@ -7,6 +7,7 @@ import datetime
 import json
 import logging
 import os
+import re
 
 # 3rd party modules
 import requests
@@ -19,7 +20,10 @@ from jsonschema import (
 
 # This project
 from mozci.ci_manager import BaseCIManager
-from mozci.errors import TaskClusterError
+from mozci.errors import (
+    TaskClusterError,
+    DecisionTaskError
+)
 from mozci.repositories import query_repo_url
 from mozhginfo.pushlog_client import query_push_by_revision
 
@@ -30,6 +34,7 @@ TC_TASK_INSPECTOR = "%s/task-inspector/#" % TC_TOOLS_HOST
 TC_TASK_GRAPH_INSPECTOR = "%s/task-graph-inspector/#" % TC_TOOLS_HOST
 TC_SCHEMA_URL = 'http://schemas.taskcluster.net/scheduler/v1/task-graph.json'
 TC_INDEX_URL = 'https://index.taskcluster.net/v1/task/'
+TC_ARTIFACTS_URL = 'https://public-artifacts.taskcluster.net/'
 
 
 class TaskClusterManager(BaseCIManager):
@@ -408,12 +413,110 @@ def authenticate():
     return taskcluster_client.authenticate()
 
 
-def get_full_task(repo_name="mozilla-inbound"):
+def get_full_task(decisionTaskId=""):
     """
-    This function fetches the latest full-task-graph file
-    for a given repository.
+    This function fetches the full task file for the
+    decisionTaskId.
     """
-    namespace = "gecko.v2." + repo_name + ".latest.firefox.decision"
-    full_tasks_url = TC_INDEX_URL + namespace + "/artifacts/public/full-task-graph.json"
-    full_tasks = requests.get(full_tasks_url).json()
-    return full_tasks
+    file_url = TC_ARTIFACTS_URL + decisionTaskId + "/0/public/full-task-graph.json"
+    resp = requests.get(file_url)
+    if resp.status_code != 200:
+        raise DecisionTaskError
+    return json.loads(resp.text)
+
+
+def get_task_queue(task_labels, full_tasks):
+    """
+    This function carries out depth first search on
+    full tasks file and produces a queue of task
+    labels which need to be scheduled, satisfying
+    all dependencies.
+    """
+    # Needed for Depth First Search
+    tasks_discovered = []
+    # Will store dependencies left and taskId
+    task_data = {}
+    # Stores the order in which tasks need to be scheduled
+    # This queue is built using Depth First Search
+    task_queue = []
+
+    while len(task_labels) > 0:
+        task_label = task_labels[0]
+        if task_label not in tasks_discovered:
+            tasks_discovered.append(task_label)
+        if task_label not in task_data:
+            task_data[task_label] = {
+                "dependencies": full_tasks[task_label]["dependencies"].values()
+            }
+        # List of remaining dependencies
+        dependencies = task_data[task_label]["dependencies"]
+        if len(dependencies) == 0:
+            # We have satisfied all dependencies, let's execute this task!
+            task_label = task_labels.pop(0)
+            task_queue.append(task_label)
+        else:
+            # Let's do the next dependency
+            dependency = task_data[task_label]["dependencies"].pop(0)
+            # Inserting in the beginning for a depth first search
+            # Taking care not to insert tasks already in discovered list
+            if dependency not in tasks_discovered:
+                task_labels.insert(0, dependency)
+    return task_queue
+
+
+def task_reference_clean(task_label, full_tasks, taskIds):
+    """
+    Tasks in full-task-graph.json have a number
+    of task-reference JSON structures which
+    have to be replaced with the task IDs of
+    the scheduled tasks.
+    """
+    task = full_tasks[task_label]['task']
+    task_json = json.dumps(task)
+    # Finding all parts of JSON of the form
+    # { "task-reference": "<some string>" }
+    references = re.findall(r'{\s*?\r*?\n*?\s*?"task-reference"\s*?:.*?\n*?.*?}', task_json)
+
+    for ref in references:
+        # The values of "task-reference" have < key to a depedency >
+        # Our goal is to replace <...> with the correct taskId
+        # All dependencies have been scheduled in the past
+        ref_string = re.findall(r'<.+?>', ref)[0]
+        # Removing < and >
+        ref_key = ref_string[1:-1]
+        # Fetching task label
+        ref_label = full_tasks[task_label]["dependencies"][ref_key]
+        # Replacing <...> with the taskId
+        new_ref = ref.replace(ref_string, taskIds[ref_label])
+        ref_dict = json.loads(new_ref)
+        # Replacing { "task-reference": "<some string>" } with
+        # modified <some string>
+        task_json = task_json.replace(ref, '"' + ref_dict["task-reference"] + '"')
+    return json.loads(task_json)
+
+
+def schedule_treeherder_jobs(task_labels, decisionTaskId, credentials):
+    """
+    Parent function which schedules TC jobs in Treeherder
+    satisfying all dependencies. Will be used by pulse
+    actions.
+    """
+    try:
+        tc = TaskClusterManager(credentials=credentials)
+    except IOError:
+        tc = TaskClusterManager(web_auth=True)
+    full_tasks = get_full_task(decisionTaskId)
+    task_queue = get_task_queue(task_labels, full_tasks)
+    # This dictionary will store all task Ids
+    taskIds = dict((task, "") for task in task_queue)
+    for task_label in task_queue:
+        task = task_reference_clean(task_label, full_tasks, taskIds)
+        # Adding dependencies field to task with newly found task Ids
+        dependencies = full_tasks[task_label]["dependencies"].values()
+        task["dependencies"] = []
+        for dependency in dependencies:
+            task["dependencies"].append(taskIds[dependency])
+        # Scheduling our task
+        taskId = tc.schedule_task(task=task)["status"]["taskId"]
+        # Adding taskId of the scheduled task
+        taskIds[task_label] = taskId
